@@ -1,6 +1,31 @@
 GBA
 ===
 
+## Chemotaxis ##
+
++ Game starts up with a splash screen with some directions
++ Start - begins or restarts simulation
++ Select - pause simulation and goes to stats page, any key returns
++ A - loads movable food
++ B - drops movable food
++ D-pad - positions movable food
++ L - clears all food
++ R - adds random food
+
+States
+
++ splash screen
++ stats screen
++ simulation
+
+Layers
+
+1. food
+2. bacteria
+3. movable food
+
+
+
 Messing around with GBA development. I'd like to make chemotaxis on the GBA.
 Maybe some kind of simple menu system to run some other simulations.
 
@@ -56,3 +81,5 @@ PATH=$PATH:$DEVKITARM/bin:$DEVKITPRO/tools/bin
 	+ Power switch
 	+ Serial I/O link cable
 	+ Cartridge I/O
+
+
