@@ -19,7 +19,7 @@ typedef COLOR      M3LINE[M3_WIDTH];
 
 // bugs
 #define SPECIES 6
-#define MAXBUGS 500
+#define MAXBUGS 200
 
 // foods
 #define MAXFOODS 5
@@ -27,9 +27,8 @@ typedef COLOR      M3LINE[M3_WIDTH];
 #define SPLOFF 3
 
 /*****************************************************************************\
- distance function
+ Error
 \*****************************************************************************/
-
 
 void error_screen(char *doing) {
 	REG_DISPCNT= DCNT_MODE0 | DCNT_BG0;
@@ -40,7 +39,7 @@ void error_screen(char *doing) {
 }
 
 /*****************************************************************************\
- distance function
+ Distance
 \*****************************************************************************/
 
 const u8 DISTANCE[160][240] = {
@@ -242,9 +241,9 @@ void set_bug(bug b, u8 x, u8 y, u16 color, u16 energy) {
 struct foodsource {
 	u8  x;
 	u8  y;
-	u8  p;
-	u16 v;
-	u8  g[SPLOTCH][SPLOTCH];
+	u16 sto; // storage
+	u8  tic;
+	u8  g[SPLOTCH][SPLOTCH]; // graphic
 }; typedef struct foodsource * food;
 
 static const u8 FOODSHAPE[SPLOTCH][SPLOTCH] = {
@@ -257,24 +256,17 @@ static const u8 FOODSHAPE[SPLOTCH][SPLOTCH] = {
 	{0,0,1,1,1,0,0}
 };
 
-void set_food(food f, u8 x, u8 y, u16 v) {
+void set_food(food f, u8 x, u8 y, u16 sto) {
 	f->x = (x == 255) ? qran_range(10, 230) : x;
 	f->y = (y == 255) ? qran_range(10, 150) : y;
-	f->v = v;
-	f->p = 37;
+	f->sto = sto;
+	f->tic = 10;
 	for (int x = 0; x < SPLOTCH; x++) {
 		for (int y = 0; y < SPLOTCH; y++) {
 			f->g[x][y] = FOODSHAPE[x][y];
 		}
 	}
 }
-
-void consume_food(food f) {
-	f->v--;
-
-}
-
-
 
 /*****************************************************************************\
  Interactions
@@ -285,7 +277,7 @@ food nearest_food(bug b, food *foods) {
 	food nearest = NULL;
 	for (int i = 0; i < MAXFOODS; i++) {
 		food f = foods[i];
-		if (f->v == 0) continue;
+		if (f->sto == 0) continue;
 		int d = distance(b->x, b->y, f->x, f->y);
 		if (d < min) {
 			min = d;
@@ -293,6 +285,37 @@ food nearest_food(bug b, food *foods) {
 		}
 	}
 	return nearest;
+}
+
+void eat_food(bug b, food f) {
+	b->sto += 50;
+	f->sto--;
+	f->tic--;
+
+	if (f->tic > 1) return;
+
+	// update graphic every 10 feedings
+	f->tic = 10; // reset
+	int n = 0; // find out how many pixels remain
+	for (int x = 0; x < SPLOTCH; x++) {
+		for (int y = 0; y < SPLOTCH; y++) {
+			if (f->g[x][y]) n++;
+		}
+	}
+	int idx = qran_range(0, n+1); //choose a random pixel to kill
+	n = 0;
+	for (int x = 0; x < SPLOTCH; x++) {
+		for (int y = 0; y < SPLOTCH; y++) {
+			if (f->g[x][y]) {
+				if (n == idx) {
+					f->g[x][y] = 0;
+					return;
+				}
+				n++;
+			}
+		}
+	}
+
 }
 
 /*****************************************************************************\
@@ -303,16 +326,12 @@ struct simulation {
 	bug  *bugs;
 	food *foods;
 	u16 time;
-	u8 drop; // 0 none, 1 food ready, 2 bomb ready
-	u8 x;
-	u8 y;
 };
 
-void update(struct simulation sim) {
-	// plot the foods
+void plot_foods(food *foods) {
 	for (int i = 0; i < MAXFOODS; i++) {
-		food f = sim.foods[i];
-		if (f->v == 0) continue;
+		food f = foods[i];
+		if (f->sto == 0) continue;
 		for (int x = 0; x < SPLOTCH; x++) {
 			for (int y = 0; y < SPLOTCH; y++) {
 				int color = (f->g[x][y]) ? CLR_GRY : CLR_BLK;
@@ -320,95 +339,99 @@ void update(struct simulation sim) {
 			}
 		}
 	}
+}
 
-	// update the bugs
+void plot_bug(bug b, int dx, int dy) {
+	m3_mem[b->y][b->x] = CLR_BLK; // unplot old position
+	if      (b->x + dx < 1)   b->x = 1;
+	else if (b->x + dx > 238) b->x = 238;
+	else                      b->x += dx;
+	if      (b->y + dy < 1)   b->y = 1;
+	else if (b->y + dy > 158) b->y = 158;
+	else                      b->y += dy;
+	m3_mem[b->y][b->x] = b->col; // plot new position
+}
+
+void reproduce(bug b, struct simulation sim) {
 	for (int i = 0; i < MAXBUGS; i++) {
-		bug b = sim.bugs[i];
-		if (b->sto == 0) continue;
-
-		// unplot previous position
-		m3_mem[b->y][b->x] = CLR_BLK;
-
-		// life takes energy
-		if (b->sto > 1) b->sto -= 1;
-
-		// thermal vibration moves them around a little
-		b->x += qran_range(0, 3) - 1;
-		b->y += qran_range(0, 3) - 1;
-
-		if      (b->x < 1)   b->x = 1;
-		else if (b->x > 238) b->x = 238;
-		if      (b->y < 1)   b->y = 1;
-		else if (b->y > 158) b->y = 158;
-
-		// check for food sources
-		food f = nearest_food(b, sim.foods);
-		if (f == NULL) {
-			m3_mem[b->y][b->x] = b->col;
-			b->mem = 255;
-			continue;
+		if (sim.bugs[i]->sto < 1) {
+			set_bug(sim.bugs[i], b->x, b->y, b->col, 1000);
+			b->sto = 1000;
+			return;
 		}
-
-		// yes, there's food
-		u8 d = distance(b->x, b->y, f->x, f->y);
-		if (d < SPLOFF) {
-			b->sto += 10;
-			f->v -= 1;
-			if (f->v < 0) f->v = 0;
-		}
-
-		// movement
-		//  123
-		//  4 5
-		//  678
-		if (d <= b->mem) {
-			switch (b->dir) {
-				case 1: b->x -= 1; b->y -= 1; break;
-				case 2: b->x += 0; b->y -= 1; break;
-				case 3: b->x += 1; b->y -= 1; break;
-				case 4: b->x -= 1; b->y += 0; break;
-				case 5: b->x += 1; b->y += 0; break;
-				case 6: b->x -= 1; b->y += 1; break;
-				case 7: b->x += 0; b->y += 1; break;
-				case 8: b->x += 1; b->y += 1; break;
-			}
-		} else {
-			b->dir = qran_range(1, 9);
-		}
-
-		if      (b->x < 1)   b->x = 1;
-		else if (b->x > 238) b->x = 238;
-		if      (b->y < 1)   b->y = 1;
-		else if (b->y > 158) b->y = 158;
-
-
-
-		// finalizations
-
-		b->mem = d;
-
-		// plot final position
-		m3_mem[b->y][b->x] = b->col;
 	}
 }
 
-void foodbomb(struct simulation sim, char button) {
-	char buff[64];
-	if (button == 'A' && sim.drop == 0) {
-		sim.drop = 1; // load food
-	} else if (button == 'A' && sim.drop == 1) {
-		sim.drop = 0; // and drop food
-	} else if (button == 'A' && sim.drop == 2) {
-		sim.drop = 0; // cancel food
-	} else if (button == 'B' && sim.drop == 0) {
-		sim.drop = 2; // load bomb
-	} else if (button == 'B' && sim.drop == 2) {
-		sim.drop = 0; // and drop bomb
-	} else if (button == 'B' && sim.drop == 1) {
-		sim.drop = 0; // cancel bomb
-	} else {
-		sprintf(buff, "foodbomb %c %d", button, sim.drop);
-		error_screen(buff);
+void update(struct simulation sim) {
+	plot_foods(sim.foods);
+
+	// update bugs
+	for (int i = 0; i < MAXBUGS; i++) {
+		bug b = sim.bugs[i];
+
+		// check for life/death
+		if (b->sto < 1) continue;         // it's dead
+		b->sto--;                         // life takes energy
+		if (b->sto < 1) {                 // it just died
+			m3_mem[b->y][b->x] = CLR_BLK; // remove it
+			continue;
+		}
+
+		// we have a live one!
+		int dx = qran_range(0, 3) - 1; // thermal vibration
+		int dy = qran_range(0, 3) - 1; // thermal vibration
+
+		// check for food
+		food f = nearest_food(b, sim.foods);
+		if (f == NULL) {
+			b->mem = 255;
+			plot_bug(b, dx, dy);
+			continue;
+		}
+
+		// chemotaxis
+		u8 d = distance(b->x, b->y, f->x, f->y);
+		if (d > b->mem) b->dir = qran_range(1, 9); // find a new direction
+		else {                                     // keep going
+			switch (b->dir) {
+				case 1: dx -= 1; dy -= 1; break;
+				case 2: dx += 0; dy -= 1; break;
+				case 3: dx += 1; dy -= 1; break;
+				case 4: dx -= 1; dy += 0; break;
+				case 5: dx += 1; dy += 0; break;
+				case 6: dx -= 1; dy += 1; break;
+				case 7: dx += 0; dy += 1; break;
+				case 8: dx += 1; dy += 1; break;
+			}
+		}
+
+		// finalizations
+		plot_bug(b, dx, dy);            // also updates position
+		b->mem = d;                     // update memory
+		if (d < SPLOFF) eat_food(b, f); // eat if on food
+		if (b->sto > 2000) reproduce(b, sim);
+	}
+}
+
+int all_dead(struct simulation sim) {
+	for (int i = 0; i < MAXBUGS; i++) {
+		if (sim.bugs[i]->sto > 1) return 0;
+	}
+	return 1;
+}
+
+void add_food(struct simulation sim) {
+	for (int i = 0; i < MAXFOODS; i++) {
+		if (sim.foods[i]->sto < 1) {
+			set_food(sim.foods[i], 255, 255, 370);
+			return;
+		}
+	}
+}
+
+void clear_food(struct simulation sim) {
+	for (int i = 0; i < MAXFOODS; i++) {
+		sim.foods[i]->sto = 0;
 	}
 }
 
@@ -427,14 +450,49 @@ void reset_screen(void) {
 
 void stats_screen(struct simulation sim) {
 	char buff[64];
-	u8 d = distance(0, 0, 3, 4);
-	sprintf(buff, "%d", d);
+	int alive = 0;
+	int count[6];
 
+	for (int i = 0; i < 6; i++) count[i] = 0;
+
+	for (int i = 0; i < MAXBUGS; i++) {
+		if (sim.bugs[i]->sto > 0) {
+			alive++;
+			switch (sim.bugs[i]->col) {
+				case CLR_RED: count[0]++; break;
+				case CLR_YEL: count[1]++; break;
+				case CLR_GRN: count[2]++; break;
+				case CLR_CYN: count[3]++; break;
+				case CLR_BLU: count[4]++; break;
+				case CLR_MAG: count[5]++; break;
+			}
+		}
+	}
 
 	REG_DISPCNT= DCNT_MODE0 | DCNT_BG0;
 	tte_init_se_default(0, BG_CBB(0)|BG_SBB(31));
-	tte_write("Stats Page\n");
+	tte_set_pos(0, 10);
+	tte_write(" Stats Page\n\n");
+	sprintf(buff, " Time:    %d\n", sim.time);
 	tte_write(buff);
+	sprintf(buff, " Bugs:    %d\n", alive);
+	tte_write(buff);
+	sprintf(buff, " Red:     %d\n", count[0]);
+	tte_write(buff);
+	sprintf(buff, " Yellow:  %d\n", count[1]);
+	tte_write(buff);
+	sprintf(buff, " Green:   %d\n", count[2]);
+	tte_write(buff);
+	sprintf(buff, " Cyan:    %d\n", count[3]);
+	tte_write(buff);
+	sprintf(buff, " Blue:    %d\n", count[4]);
+	tte_write(buff);
+	sprintf(buff, " Magenta: %d\n", count[5]);
+	tte_write(buff);
+
+	sprintf(buff, "energy: %d\n", sim.bugs[0]->sto);
+	tte_write(buff);
+
 	while (1) {
 		key_poll();
 		if (key_hit(KEY_ANY)) break;
@@ -463,8 +521,20 @@ void reset_simulation(struct simulation sim) {
 	for (int i = 6; i < MAXBUGS; i++) set_bug(sim.bugs[i], 0, 0, 0, 0);
 	for (int i = 1; i < MAXFOODS; i++) set_food(sim.foods[i], 0, 0, 0);
 	sim.time = 0;
-	sim.drop = 0;
 	reset_screen();
+}
+
+void dead_screen(struct simulation sim) {
+	REG_DISPCNT= DCNT_MODE0 | DCNT_BG0;
+	tte_init_se_default(0, BG_CBB(0)|BG_SBB(31));
+	tte_set_pos(0, 10);
+	tte_write("All bacteria died...\n");
+	tte_write("Hit any key to restart\n");
+	while (1) {
+		key_poll();
+		if (key_hit(KEY_ANY)) break;
+	}
+	reset_simulation(sim);
 }
 
 /*****************************************************************************\
@@ -474,8 +544,6 @@ void reset_simulation(struct simulation sim) {
 int main() {
 	int seed = 0;
 	struct simulation sim;
-	sim.x = 120;
-	sim.y = 80;
 	sim.bugs = malloc(sizeof(bug) * MAXBUGS);
 	for (int i = 0; i < MAXBUGS; i++)
 		sim.bugs[i] = malloc(sizeof(struct bacterium));
@@ -487,15 +555,17 @@ int main() {
 	REG_DISPCNT = DCNT_MODE0 | DCNT_BG0;
 	tte_init_se_default(0, BG_CBB(0)|BG_SBB(31));
 	tte_set_pos(0, 10);
-	tte_write("Bacterial Life Simulator\n\n");
-	tte_write("Button    Action\n");
-	tte_write("------    ------------------\n");
-	tte_write("Start     Start/reset game\n");
-	tte_write("A         Make/Drop food\n");
-	tte_write("B         Make/Drop bomb\n");
-	tte_write("D Pad     Move food/bomb\n");
-	tte_write("L         Stats\n");
-	tte_write("R         Pause\n");
+	tte_write("  Bacterial Life Simulator\n\n\n");
+	tte_write("  Button  Action\n");
+	tte_write("  ------  ----------------\n");
+	tte_write("  Start   Start/reset\n");
+	tte_write("  A       Add food\n");
+	tte_write("  B       Clear food\n");
+	tte_write("  L       Show stats page\n");
+	tte_write("  R       Pause simulation\n");
+	tte_set_pos(120, 140);
+	tte_write("by Ian Korf");
+
 	while (1) {
 		seed++;
 		key_poll();
@@ -506,16 +576,14 @@ int main() {
 
 	// running interface
 	while (1) {
+		sim.time++;
 		key_poll();
+		if (all_dead(sim))      dead_screen(sim);
 		if (key_hit(KEY_START)) reset_simulation(sim);
-		if (key_hit(KEY_L)) stats_screen(sim);
-		if (key_hit(KEY_R)) pause_screen();
-		if (key_hit(KEY_A)) foodbomb(sim, 'A');
-		if (key_hit(KEY_B)) foodbomb(sim, 'B');
-		if (key_hit(KEY_LEFT) && sim.x > 10) sim.x--;
-		if (key_hit(KEY_RIGHT) && sim.x < 229) sim.x++;
-		if (key_hit(KEY_UP)  && sim.y > 10) sim.y--;
-		if (key_hit(KEY_DOWN) && sim.y < 149) sim.y++;
+		if (key_hit(KEY_L))     stats_screen(sim);
+		if (key_hit(KEY_R))     pause_screen();
+		if (key_hit(KEY_A))     add_food(sim);
+		if (key_hit(KEY_B))     clear_food(sim);
 		update(sim);
 		vid_vsync();
 	}
